@@ -1,4 +1,4 @@
-# 3dWiFiSend
+# 3dWiFiSendFile
 
 This was a significant re-write from the original ( found at: https://github.com/yandreev3/3dWiFiSend)
 
