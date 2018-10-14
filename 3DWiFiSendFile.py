@@ -13,15 +13,16 @@ logger = logging.getLogger(__name__)
 
 class Print3D:
 
-    # TODO: retrofit all routines that write to the network with responseOK()
     # TODO: Really need some proper error & exception checking all the way thorugh
 
     CMD_STARTWRITE_SD = "M28 "
     CMD_ENDWRITE_SD = "~M29"
     CMD_GETFILELIST = "~M20 "
+    CMD_STOPPRINT = "~M26"
     CMD_STARTPRINT = "~M27"
     CMD_SETSDFILE = "~M23 "
     CMD_STATUS = "~M115\x0d\x0a"
+    CMD_MACHINESTATUS = "~M119\x0d\x0a"
     CMD_INIT = "~M601 S1\x0d\x0a"
     CMD_TERM = "\x0d\x0a"
     CMD_RELEASE = "~M602\x0d\x0a"
@@ -91,7 +92,17 @@ class Print3D:
         self.sock.send(bytes(self.CMD_STATUS, self._file_encode))
         msg = self.responseWait()
         logger.debug(msg)
+        msg = msg + "Machine status: " + self.machineStatus()
         return msg
+
+    def machineStatus(self):
+        self.sock.send(bytes(self.CMD_MACHINESTATUS, self._file_encode))
+        msg = self.responseWait()
+        logger.debug(msg)
+        status = []
+        if self.responseOK(msg):
+            status = msg.split()
+        return status[11] if status != [] else status
 
     def sendEndWriteSd(self):
         cmd = self.CMD_ENDWRITE_SD + self.CMD_TERM
@@ -113,11 +124,15 @@ class Print3D:
         logger.info("Get list of files result: " + msg)
         return msg
 
-    def sendFileChunk(self, buff, seekPos, chknum):
+    def _sendFileChunk(self, buff, chknum):
+        """
+        sub routine of sendFile - calculate checksum, add headers to chunk and send.
 
-        # logger.debug("File Position: " + str(seekPos))
-
-        chunkCount = chknum.to_bytes(4,'big')
+        :param buff: bytarray()
+        :param chknum: byte[4]
+        :return: void
+        """
+        chunkCount = chknum.to_bytes(4, 'big')
         myCRC = binascii.crc32(buff).to_bytes(4, 'big')
         dataArray = self.CHUNK_HEADER1 + chunkCount + self.CHUNK_HEADER2 + myCRC + buff
         tmpSize = len(dataArray)
@@ -134,9 +149,6 @@ class Print3D:
         return
 
     def sendFile(self):
-
-        # TODO: Make sure we aren't printing already before uploading a new file.
-
         with open(self.fileName, 'rb', buffering=1) as fp:
             # Get File Length
             fp.seek(0, 2)
@@ -171,7 +183,7 @@ class Print3D:
                     logger.debug("Appended \\x00's to make up buffer")
                     chunk += bytearray(self.BUFSIZE-chunkHeaderLength-5-len(chunk))
 
-                self.sendFileChunk(chunk, seekPos, chunkNum)
+                self._sendFileChunk(chunk, chunkNum)
                 chunkNum += 1
 
         logger.debug("End write SendFile ")
@@ -183,28 +195,43 @@ class Print3D:
 
     def sendStartPrint(self):
 
-        # TODO: make sure we aren't already printing before trying to print something new.
+        if self.machineStatus() == "READY":
+            sdFileName = self.sdPath + self.baseFilename
+            cmd = self.CMD_SETSDFILE + sdFileName + self.CMD_TERM
+            self.sock.send(self.encodeCmd(cmd))
+            msg = self.responseWait()
+            if self.responseOK(msg):
+                logger.debug("startPrint: set sd card filename: " + sdFileName)
+            else:
+                logger.error("startPrint: failed to set SD card filename: " + sdFileName)
+                return False
 
-        sdFileName = self.sdPath + self.baseFilename
-        cmd = self.CMD_SETSDFILE + sdFileName + self.CMD_TERM
+            cmd = self.CMD_STARTPRINT + self.CMD_TERM
+            self.sock.send(self.encodeCmd(cmd))
+            msg = self.responseWait()
+            if self.responseOK(msg):
+                logger.debug("startPrint: successfully started print job")
+            else:
+                logger.error("startPrint: failed to start print job")
+                return False
+
+            return True
+        else:
+            return False
+
+    def stopPrintJob(self):
+        """
+        Send an M26 command to the printer to terminate a running print job
+
+        :rtype: bool
+        """
+        cmd = self.CMD_STOPPRINT + self.CMD_TERM
         self.sock.send(self.encodeCmd(cmd))
         msg = self.responseWait()
         if self.responseOK(msg):
-            logger.debug("startPrint: set sd card filename: " + sdFileName)
+            return True
         else:
-            logger.error("startPrint: failed to set SD card filename: " + sdFileName)
             return False
-
-        cmd = self.CMD_STARTPRINT + self.CMD_TERM
-        self.sock.send(self.encodeCmd(cmd))
-        msg = self.responseWait()
-        if self.responseOK(msg):
-            logger.debug("startPrint: successfully started print job")
-        else:
-            logger.error("startPrint: failed to start print job")
-            return False
-
-        return True
 
     def responseWait(self):
         msg = self.sock.recv(self.RECVBUF)
@@ -214,18 +241,16 @@ class Print3D:
 
         # TODO: Make this do a more robust response check.
 
-        logger.debug(response)
-        logger.debug(response.endswith((str(self.RESPONSE_OK))))
         if response.endswith(str(self.RESPONSE_OK)):
             logger.debug("Server Response: OK")
             return True
         else:
-            logger.debug( "Fuck It. \n'" + response + "'")
             logger.error("Server Response: NOT OK")
             return False
 
     # Print iterations progress
-    def printProgressBar(self, iteration, total, prefix='', suffix='', decimals=0, length=100, fill='█'):
+    @staticmethod
+    def printProgressBar(iteration, total, prefix='', suffix='', decimals=0, length=100, fill='█'):
         """
         (Thanks Greenstick@stackoverflow)
         Call in a loop to create terminal progress bar
@@ -255,6 +280,7 @@ def __Main__():
     argpar.add_argument('-s', action='store_true', help='Print status of the 3D Printer.')
     argpar.add_argument('-l', action='store_true', help='List the files on the printer SD Card.')
     argpar.add_argument('-p', action='store_true', help='Print on completion of file download.')
+    argpar.add_argument('-c', action='store_true', help='Cancel an in-flight print job.')
     argpar.add_argument('-a', dest='hostname', default='10.1.1.129', help='Hostname or IP address of printer.')
 
     # Create the printer object ready to start recieving variables.
@@ -272,20 +298,28 @@ def __Main__():
     if args.l:
         print(myobj.sendGetFileList())
 
+    if args.c:
+        myobj.stopPrintJob()
+
     if args.filename:
         myFile = Path(args.filename)
         myobj.baseFilename = myFile.name
 
         if myFile.is_file:
-            myFile = Path(args.filename).resolve()
-            myobj.fileName = str(myFile)
-            print("Sending to printer: " + myobj.fileName)
-            myobj.sendFile()
+            # TODO: We should be doing this inside of Print3D().sendFile instead of here.
+            if myobj.machineStatus():
+                myFile = Path(args.filename).resolve()
+                myobj.fileName = str(myFile)
+                print("Sending to printer: " + myobj.fileName)
+                myobj.sendFile()
+            else:
+                print("Printer not ready - " + myobj.machineStatus())
 
         if args.p:
-            myobj.sendStartPrint()
-            print("Set to print: " + myobj.baseFilename)
-
+            if myobj.sendStartPrint():
+                print("Set to print: " + myobj.baseFilename)
+            else:
+                print("Couldn't start print - Printer not ready. Current status: " + myobj.machineStatus())
 
     myobj.release()
 
