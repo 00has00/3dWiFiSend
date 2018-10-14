@@ -103,7 +103,9 @@ class Print3D:
         return
 
     def sendGetFileList(self):
+
         # TODO: Figure out how file listing works on FF Printers.
+
         cmd = self.CMD_GETFILELIST + self.CMD_TERM
         logger.info("Get List of Files: " + cmd)
         self.sock.send(self.encodeCmd(cmd))
@@ -133,6 +135,8 @@ class Print3D:
 
     def sendFile(self):
 
+        # TODO: Make sure we aren't printing already before uploading a new file.
+
         with open(self.fileName, 'rb', buffering=1) as fp:
             # Get File Length
             fp.seek(0, 2)
@@ -153,8 +157,11 @@ class Print3D:
             # Stick header on each chunk.
             chunkNum = 0
             chunkHeaderLength = len(self.CHUNK_HEADER1) + len(self.CHUNK_HEADER2) + 4
+            # Set up progress bar
+            self.printProgressBar(0, filesize, prefix='Progress:', suffix='Complete', length=25)
             while True:
                 seekPos = fp.tell()
+                self.printProgressBar(seekPos, filesize, prefix='Progress:', suffix='Complete', length=25)
                 chunk = fp.read(self.BUFSIZE - chunkHeaderLength - 5)
                 # logger.debug("Bytes Read from file " + str(len(chunk)))
                 if not chunk:
@@ -175,6 +182,9 @@ class Print3D:
         return
 
     def sendStartPrint(self):
+
+        # TODO: make sure we aren't already printing before trying to print something new.
+
         sdFileName = self.sdPath + self.baseFilename
         cmd = self.CMD_SETSDFILE + sdFileName + self.CMD_TERM
         self.sock.send(self.encodeCmd(cmd))
@@ -201,6 +211,7 @@ class Print3D:
         return msg.decode(self._file_encode, 'replace')
 
     def responseOK(self, response):
+
         # TODO: Make this do a more robust response check.
 
         logger.debug(response)
@@ -212,6 +223,28 @@ class Print3D:
             logger.debug( "Fuck It. \n'" + response + "'")
             logger.error("Server Response: NOT OK")
             return False
+
+    # Print iterations progress
+    def printProgressBar(self, iteration, total, prefix='', suffix='', decimals=0, length=100, fill='█'):
+        """
+        (Thanks Greenstick@stackoverflow)
+        Call in a loop to create terminal progress bar
+        @params:
+            iteration   - Required  : current iteration (Int)
+            total       - Required  : total iterations (Int)
+            prefix      - Optional  : prefix string (Str)
+            suffix      - Optional  : suffix string (Str)
+            decimals    - Optional  : positive number of decimals in percent complete (Int)
+            length      - Optional  : character length of bar (Int)
+            fill        - Optional  : bar fill character (Str)
+        """
+        percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+        filledLength = int(length * iteration // total)
+        bar = fill * filledLength + '-' * (length - filledLength)
+        print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end='\r')
+        # Print New Line on Complete
+        if iteration == total:
+            print()
 
 
 def __Main__():
@@ -246,7 +279,7 @@ def __Main__():
         if myFile.is_file:
             myFile = Path(args.filename).resolve()
             myobj.fileName = str(myFile)
-            print("Sending to printer: " + myobj.filename)
+            print("Sending to printer: " + myobj.fileName)
             myobj.sendFile()
 
         if args.p:
